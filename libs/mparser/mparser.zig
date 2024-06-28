@@ -77,6 +77,98 @@ pub fn Param(comptime Id: type) type {
     return struct {
         id: Id,
         names: Names = Names{},
-        tekes_value: Values = .none,
+        takes_value: Values = .none,
     };
 }
+
+pub fn parseParams(allocator: mem.Allocator, str: []const u8) ![]Param(Help) {
+    var end: usize = undefined;
+    return parseParamsEx(allocator, str, &end);
+}
+
+pub fn parseParamsEx(allocator: mem.Allocator, str: []const u8, end: *usize) ![]Param(Help) {
+    var list = std.ArrayList(Param(Help)).init(allocator);
+    errdefer list.deinit();
+    try parseParamsIntoArrayListEx(&list, str, end);
+    return try list.toOwnedSlice();
+}
+
+pub fn parseParamsComptime(comptime str: []const u8) [countParams(str)]Param(Help) {
+    var end: usize = undefined;
+    var res: [countParams(str)]Param(Help) = undefined;
+    _ = parseParamsIntoSliceEx(&res, str, &end) catch {
+        const loc = std.zig.findLineColumn(str, end);
+        @compileError(std.fmt.comptimePrint("error:{}:{}: failed to parse parameter:\n{}", .{
+            loc.line + 1,
+            loc.column + 1,
+            loc.source_line,
+        }));
+    };
+    return res;
+}
+
+fn countParams(str: []const u8) usize {
+    @setEvalBranchQuota(std.math.maxInt(u32));
+
+    var res: usize = 0;
+    var it = mem.split(u8, str, "\n");
+    while (it.next()) |line| {
+        const trimmed = mem.trimLeft(u8, line, " \t");
+        if (mem.startsWith(u8, trimmed, "-") or mem.startsWith(u8, trimmed, "<")) {
+            res += 1;
+        }
+    }
+    return res;
+}
+
+pub fn parseParamsIntoSlice(slice: []Param(Help), str: []const u8) ![]Param(Help) {
+    var null_alloc = heap.FixedBufferAllocator.init("");
+    var list = std.ArrayList(Param(Help)){
+        .allocator = null_alloc.allocator(),
+        .items = slice[0..0],
+        .capacity = slice.len,
+    };
+
+    try parseParamsIntoArrayList(&list, str);
+    return list.items;
+}
+
+pub fn parseParamsIntoSliceEx(slice: []Param(Help), str: []const u8, end: *usize) ![]Param(Help) {
+    var null_alloc = heap.FixedBufferAllocator.init("");
+    var list = std.ArrayList(Param(Help)){
+        .allocator = null_alloc.allocator(),
+        .items = slice[0..0],
+        .capacity = slice.len,
+    };
+    try parseParamsIntoArrayListEx(&list, str, end);
+    return list.items;
+}
+
+pub fn parseParamsIntoArrayList(list: *std.ArrayList(Param(Help)), str: []const u8) !void {
+    var end: usize = undefined;
+    return parseParamsIntoArrayListEx(list, str, &end);
+}
+
+pub fn parseParamsIntoArrayListEx(list: *std.ArrayList(Param(Help)), str: []const u8, end: *usize) !void {
+    var i: usize = 0;
+    while (i != str.len) {
+        var end_of_this: usize = undefined;
+        errdefer end.* = i + end_of_this;
+        try list.append(try parseParamsEx(str[i..], &end_of_this));
+        i += end_of_this;
+    }
+    end.* = str.len;
+}
+
+pub const Help = struct {
+    desc: []const u8 = "",
+    val: []const u8 = "",
+
+    pub fn description(h: Help) []const u8 {
+        return h.desc;
+    }
+
+    pub fn value(h: Help) []const u8 {
+        return h.val;
+    }
+};
