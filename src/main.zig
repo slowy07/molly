@@ -1,4 +1,3 @@
-const Transpiler = @import("transpiler.zig");
 const std = @import("std");
 const builtin = @import("builtin");
 
@@ -10,6 +9,8 @@ const mem = std.mem;
 const fmt = std.fmt;
 
 const Allocator = mem.Allocator;
+
+const Transpiler = @import("transpiler.zig");
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -30,9 +31,12 @@ pub fn main() !void {
 
     const argv = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, argv);
+
     var target_tuple: ?[]const u8 = null;
+
     var transpiler = Transpiler.init(allocator);
     defer transpiler.deinit();
+
     var output_ast = false;
 
     var i: usize = 1;
@@ -59,16 +63,35 @@ pub fn main() !void {
         } else if (mem.eql(u8, arg, "-R")) {
             transpiler.recursive = true;
             continue;
+        } else if (mem.eql(u8, arg, "-no-glue")) {
+            transpiler.no_glue = true;
+            continue;
+        } else if (mem.eql(u8, arg, "-no-comments")) {
+            transpiler.no_comments = true;
+            continue;
+        } else if (mem.eql(u8, arg, "--")) {
+            i += 1;
+            break;
+        } else if (mem.eql(u8, arg, "-target")) {
+            try clang.append(arg);
+            i += 1;
+
+            target_tuple = argv[i];
+            try clang.append(argv[i]);
+            continue;
         } else if (mem.eql(u8, arg, "-output-ast")) {
             output_ast = true;
             continue;
         } else if (i == argv.len - 1 and arg[0] != '-') {
             break;
         }
+
         try clang.append(arg);
     }
+
     const host_target = try builtin.target.linuxTriple(allocator);
     defer allocator.free(host_target);
+
     if (target_tuple == null) {
         target_tuple = host_target;
     }
@@ -90,6 +113,7 @@ pub fn main() !void {
     while (i < argv.len) : (i += 1) {
         const file_path = argv[i];
         log.info("binding `{s}`", .{file_path});
+
         try clang.append(file_path);
         defer _ = clang.pop();
 
@@ -104,9 +128,54 @@ pub fn main() !void {
         }
 
         if (output_ast) {
-            var astfile = try std.fs.cwd().createFile("molly_ast.json", .{});
+            var astfile = try std.fs.cwd().createFile("c2z_ast.json", .{});
             try astfile.writeAll(astdump.stdout);
             astfile.close();
+        }
+
+        var parsed = try json.parseFromSlice(json.Value, allocator, astdump.stdout, .{});
+        defer parsed.deinit();
+
+        transpiler.header = std.fs.path.basename(file_path);
+        try transpiler.run(&parsed.value);
+
+        log.info("transpiled {d}/{d} ({d:.2} %)", .{
+            transpiler.nodes_visited,
+            transpiler.nodes_count,
+            (100.0 * @as(f64, @floatFromInt(transpiler.nodes_visited)) / @as(f64, @floatFromInt(transpiler.nodes_count))),
+        });
+
+        const file_name = std.fs.path.stem(file_path);
+
+        {
+            output_path.clearRetainingCapacity();
+            try output_path.writer().print("{s}.zig", .{file_name});
+
+            var file = try std.fs.cwd().createFile(output_path.items, .{});
+            try file.writeAll(transpiler.buffer.items);
+            file.close();
+
+            log.info("formating `{s}`", .{output_path.items});
+            var zfmt_args = std.ArrayList([]const u8).init(allocator);
+            defer zfmt_args.deinit();
+            zfmt_args.clearRetainingCapacity();
+            try zfmt_args.append("zig");
+            try zfmt_args.append("fmt");
+            try zfmt_args.append(output_path.items);
+
+            var zfmt = std.process.Child.init(zfmt_args.items, allocator);
+            zfmt.stderr_behavior = .Ignore;
+            zfmt.stdout_behavior = .Ignore;
+            _ = try zfmt.spawnAndWait();
+        }
+
+        if (!transpiler.no_glue) {
+            output_path.clearRetainingCapacity();
+            try output_path.writer().print("{s}_glue.cpp", .{file_name});
+
+            var file = try std.fs.cwd().createFile(output_path.items, .{});
+            try file.writeAll(transpiler.c_buffer.items);
+            file.close();
         }
     }
 }
