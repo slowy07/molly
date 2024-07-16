@@ -1,4 +1,4 @@
-![banner](./github/molly.png)
+![banner](.github/molly.png)
 
 # molly
 CPP binding with ZIG including transpiler
